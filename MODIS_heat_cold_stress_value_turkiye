@@ -1,0 +1,114 @@
+// 1. Define Study Area (Turkey)
+var roi = ee.Geometry.Rectangle([25, 36, 45, 42]);
+
+// 2. Define time range
+var startYear = 2000;
+var endYear = 2024;
+var years = ee.List.sequence(startYear, endYear);
+
+// 3. Load ERA5-Land Daily Temperature Data
+var dataset = ee.ImageCollection('ECMWF/ERA5_LAND/DAILY_AGGR')
+  .filterBounds(roi)
+  .select(['temperature_2m_max', 'temperature_2m_min']);
+
+// 4. Choose One Crop to Process (Change as Needed)
+var cropName = 'Bean';  // CHANGE THIS TO ANY CROP YOU WANT
+var thresholds = {
+  'Wheat': {heat: [30, 32], cold: [-5, 0]},
+  'Tomatoes': {heat: [35, 38], cold: [2, 5]},
+  'Sugar Beet': {heat: [35, 40], cold: [-2, 0]},
+  'Rice': {heat: [35, 37], cold: [10, 12]},
+  'Barley': {heat: [30, 32], cold: [-5, 0]},
+  'Apple': {heat: [35, 38], cold: [-7, -2]},
+  'Potatoes': {heat: [30, 32], cold: [-2, 0]},
+  'Olive': {heat: [40, 45], cold: [-7, -5]},
+  'Maize': {heat: [35, 40], cold: [0, 5]},
+  'Grape': {heat: [38, 42], cold: [-5, 0]},
+  'Bean': {heat: [32, 35], cold: [2, 5]}
+};
+
+// 5. Function to Compute Yearly Stress
+var computeYearlyStress = function(crop, limits) {
+  return ee.ImageCollection.fromImages(
+    years.map(function(y) {
+      var start = ee.Date.fromYMD(y, 1, 1);
+      var end = start.advance(1, 'year');
+
+      // Filter daily images for the year
+      var yearly = dataset
+        .filterDate(start, end)
+        .map(function(image) {
+          var TmaxC = image.select('temperature_2m_max').subtract(273.15);
+          var TminC = image.select('temperature_2m_min').subtract(273.15);
+
+          // Apply heat and cold stress masks
+          var heat = TmaxC.gte(limits.heat[0]).and(TmaxC.lte(limits.heat[1])).rename('heat');
+          var cold = TminC.gte(limits.cold[0]).and(TminC.lte(limits.cold[1])).rename('cold');
+
+          return image.addBands([heat, cold]);
+        });
+
+      // Sum the number of stress days
+      var sum = yearly.select(['heat', 'cold']).sum();
+      var count = yearly.select(0).count();
+      var fraction = sum.divide(count).rename(['heat_frac', 'cold_frac']);
+
+      return fraction.set({
+        'system:time_start': start.millis(),
+        'year': y,
+        'crop': crop,
+        'label': ee.Date(start).format('YYYY')
+      }).clip(roi);
+    })
+  );
+};
+
+// 6. Process Only ONE Crop at a Time
+var selectedCrop = computeYearlyStress(cropName, thresholds[cropName]);
+
+// 7. Reduce Over ROI for Mean Fraction Per Year
+var yearlyFeatures = selectedCrop.map(function(img) {
+  var stats = img.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: roi,
+    scale: 25000,  // Lower resolution to save memory
+    maxPixels: 1e9
+  });
+  return ee.Feature(null, {
+    'year': img.get('label'),
+    'crop': img.get('crop'),
+    'heat': stats.get('heat_frac'),
+    'cold': stats.get('cold_frac')
+  });
+});
+
+// 8. Export the Data to CSV (Google Drive)
+Export.table.toDrive({
+  collection: yearlyFeatures,
+  description: cropName + '_Yearly_HeatColdStress_2000_2024',
+  fileFormat: 'CSV'
+});
+
+// 9. Plot Charts for Selected Crop
+var heatChart = ui.Chart.feature.byFeature(yearlyFeatures, 'year', 'heat')
+  .setChartType('LineChart')
+  .setOptions({
+    title: 'Yearly Mean Heat Stress Fraction for ' + cropName + ' (2000-2024)',
+    hAxis: { title: 'Year' },
+    vAxis: { title: 'Fraction of Area' },
+    lineWidth: 2,
+    pointSize: 4
+  });
+
+var coldChart = ui.Chart.feature.byFeature(yearlyFeatures, 'year', 'cold')
+  .setChartType('LineChart')
+  .setOptions({
+    title: 'Yearly Mean Cold Stress Fraction for ' + cropName + ' (2000-2024)',
+    hAxis: { title: 'Year' },
+    vAxis: { title: 'Fraction of Area' },
+    lineWidth: 2,
+    pointSize: 4
+  });
+
+print(heatChart);
+print(coldChart);
