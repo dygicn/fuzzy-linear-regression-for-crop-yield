@@ -1,0 +1,69 @@
+// Define Study Area (Turkey)
+var countries = ee.FeatureCollection("USDOS/LSIB_SIMPLE/2017");
+var turkey = countries.filter(ee.Filter.eq('country_na', 'Turkey'));
+
+// Load SPEI Dataset (2000–2024)
+var speiCollection = ee.ImageCollection('CSIC/SPEI/2_10')
+                        .filterDate('2000-01-01', '2024-12-31');
+
+// Filter only images that contain the 12-month SPEI band
+var spei12 = speiCollection.filter(ee.Filter.listContains('system:band_names', 'SPEI_12_month'))
+                           .map(function(img) {
+  return img.select('SPEI_12_month').rename('SPEI')
+            .copyProperties(img, ['system:time_start']);
+});
+
+// Calculate annual mean SPEI (2000–2023 only to avoid incomplete 2024)
+var years = ee.List.sequence(2000, 2023);
+
+var annualSPEI = ee.ImageCollection.fromImages(
+  years.map(function(year) {
+    var start = ee.Date.fromYMD(year, 1, 1);
+    var end = start.advance(1, 'year');
+    var filtered = spei12.filterDate(start, end);
+    var count = filtered.size();
+    return ee.Algorithms.If(
+      count.gt(0),
+      filtered.mean().rename('SPEI')
+              .set('year', year)
+              .set('system:time_start', start.millis()),
+      null
+    );
+  })
+).filter(ee.Filter.notNull(['year']));
+
+// Reduce to mean over Turkey and create feature collection
+var speiFeatures = annualSPEI.map(function(image) {
+  var mean = image.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: turkey,
+    scale: 50000,
+    maxPixels: 1e9
+  }).get('SPEI');
+
+  return ee.Algorithms.If(
+    mean,
+    ee.Feature(null, {
+      'year': image.get('year'),
+      'SPEI': mean
+    }),
+    null
+  );
+}).filter(ee.Filter.notNull(['SPEI']));
+
+// Draw Time Series Chart
+var chart = ui.Chart.feature.byFeature(speiFeatures, 'year', 'SPEI')
+  .setOptions({
+    title: 'Mean Annual SPEI (Turkey, 2000–2023)',
+    hAxis: { title: 'Year' },
+    vAxis: { title: 'SPEI Value' },
+    lineWidth: 2,
+    pointSize: 4
+  });
+
+print(chart);
+
+// Map of Mean SPEI (2000–2023)
+var meanSPEI = ee.ImageCollection(annualSPEI).mean().clip(turkey);
+Map.centerObject(turkey, 5);
+Map.addLayer(meanSPEI, {min: -2, max: 2, palette: ['red', 'white', 'blue']}, 'Mean SPEI (2000–2023)');
