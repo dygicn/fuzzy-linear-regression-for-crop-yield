@@ -1,0 +1,89 @@
+# Load necessary libraries
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+
+# Forecasting function from earlier
+forecast_predictors <- function(data, year_col = "year", start_year = 2023, end_year = 2030, r2_threshold = 0.3, recent_years = 5) {
+  future_years <- data.frame(year = start_year:end_year)
+  x_vars <- grep("^x[0-9]+$", names(data), value = TRUE)
+  
+  results_list <- lapply(x_vars, function(var) {
+    df <- data %>% select(all_of(year_col), all_of(var)) %>% na.omit()
+    
+    lm_fit <- lm(reformulate(year_col, response = var), data = df)
+    r2 <- summary(lm_fit)$r.squared
+    
+    if (r2 >= r2_threshold) {
+      pred_vals <- predict(lm_fit, newdata = future_years)
+      method <- "Trend (Linear)"
+    } else {
+      recent_data <- df %>% filter(!!sym(year_col) >= max(df[[year_col]]) - recent_years + 1)
+      avg_val <- mean(recent_data[[var]], na.rm = TRUE)
+      pred_vals <- rep(avg_val, nrow(future_years))
+      method <- "Recent Average"
+    }
+    
+    tibble(
+      year = future_years$year,
+      variable = var,
+      value = pred_vals,
+      method = method
+    )
+  })
+  
+  forecast_long <- bind_rows(results_list)
+  forecast_wide <- forecast_long %>%
+    select(year, variable, value) %>%
+    pivot_wider(names_from = variable, values_from = value)
+  
+  method_table <- forecast_long %>%
+    select(variable, method) %>%
+    distinct()
+  
+  list(forecast_data = forecast_wide, method_info = method_table)
+}
+
+# Main file path (change this)
+file_path <- "paper_2_data_29_04.xlsx"
+
+# Get all sheet (crop) names
+sheet_names <- excel_sheets(file_path)
+
+# Initialize containers
+forecast_list <- list()
+method_summary <- list()
+
+# Process each crop sheet
+for (sheet in sheet_names) {
+  data_orig <- read_excel(file_path, sheet = sheet)
+  n_cols <- ncol(data_orig)
+  colnames(data_orig) <- c(paste0("x", 1:(n_cols - 1)), "y")
+  data_orig$year <- 2000:2022
+  
+  # Standardize predictors
+  data_scaled <- data_orig %>%
+    mutate(across(starts_with("x"), ~ as.numeric(scale(.)))) %>%
+    select(year, starts_with("x"))
+  
+  # Forecast future predictors
+  result <- forecast_predictors(data_scaled)
+  
+  # Store forecasted values with crop label
+  forecast_list[[sheet]] <- result$forecast_data %>% mutate(Crop = sheet)
+  method_summary[[sheet]] <- result$method_info %>% mutate(Crop = sheet)
+}
+
+# Combine all crop forecasts and method logs
+all_forecasts <- bind_rows(forecast_list)
+all_methods <- bind_rows(method_summary)
+
+# Save for use in prediction and documentation
+write.csv(all_forecasts, "forecasted_x_values_all_crops.csv", row.names = FALSE)
+write.csv(all_methods, "forecast_methods_table_A1.csv", row.names = FALSE)
+
+# Preview results
+print(head(all_forecasts))
+print(all_methods)
