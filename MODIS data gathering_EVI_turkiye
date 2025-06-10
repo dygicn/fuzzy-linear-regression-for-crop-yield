@@ -1,0 +1,64 @@
+// Define the area of interest (Turkey)
+var turkey = ee.FeatureCollection("FAO/GAUL/2015/level0")
+  .filter(ee.Filter.eq('ADM0_NAME', 'Turkey'));
+
+// Define the time range
+var startYear = 2000;
+var endYear = 2024;
+var startDate = ee.Date.fromYMD(startYear, 1, 1);
+var endDate = ee.Date.fromYMD(endYear, 12, 31);
+
+// Load MODIS EVI dataset (MOD13Q1)
+var eviCollection = ee.ImageCollection("MODIS/006/MOD13Q1")
+  .filterDate(startDate, endDate)
+  .select("EVI")
+  .map(function(image) {
+    return image.clip(turkey).multiply(0.0001) // Scale factor for MODIS EVI
+      .copyProperties(image, ["system:time_start"]);
+  });
+
+// Generate a list of year-month pairs
+var years = ee.List.sequence(startYear, endYear);
+var months = ee.List.sequence(1, 12);
+
+var monthlyEVI = ee.ImageCollection.fromImages(
+  years.map(function(year) {
+    return months.map(function(month) {
+      var monthlyEVI = eviCollection
+        .filter(ee.Filter.calendarRange(year, year, 'year'))
+        .filter(ee.Filter.calendarRange(month, month, 'month'))
+        .mean();
+      
+      return monthlyEVI.set({
+        "year": year,
+        "month": month,
+        "date": ee.Date.fromYMD(year, month, 1).format("YYYY-MM")
+      });
+    });
+  }).flatten()
+);
+
+// Create a time series chart
+var chart = ui.Chart.image.series({
+  imageCollection: monthlyEVI,
+  region: turkey,
+  reducer: ee.Reducer.mean(),
+  scale: 5000,
+  xProperty: "date"
+})
+.setOptions({
+  title: "Monthly EVI Trend in Turkey (2000–2024)",
+  hAxis: { title: "Date", format: "YYYY-MM", slantedText: true },
+  vAxis: { title: "Mean EVI" },
+  lineWidth: 2,
+  pointSize: 3
+});
+
+// Print the chart to the console
+print(chart);
+
+// Display the latest EVI image on the map
+var latestEVI = eviCollection.sort('system:time_start', false).first();
+var eviVis = { min: 0, max: 1, palette: ['purple', 'white', 'green'] };
+Map.centerObject(turkey, 5);
+Map.addLayer(latestEVI, eviVis, "Latest EVI");
