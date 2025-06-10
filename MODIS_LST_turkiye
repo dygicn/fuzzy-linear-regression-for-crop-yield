@@ -1,0 +1,68 @@
+// 1. Define the area of interest (Turkey)
+var turkey = ee.FeatureCollection("FAO/GAUL/2015/level0")
+  .filter(ee.Filter.eq('ADM0_NAME', 'Turkey'));
+
+// 2. Define time range
+var startYear = 2000;
+var endYear = 2024;
+var years = ee.List.sequence(startYear, endYear);
+var months = ee.List.sequence(1, 12);
+
+// 3. Load MODIS LST (MOD11A2 = 8-day composite, 1km resolution)
+var modisLST = ee.ImageCollection("MODIS/006/MOD11A2")
+  .select("LST_Day_1km")
+  .map(function(image) {
+    // Clip to Turkey first, then apply scale factor and convert from Kelvin to Celsius
+    var clipped = image.clip(turkey);
+    var lstCelsius = clipped.multiply(0.02).subtract(273.15)
+      .copyProperties(image, ["system:time_start"]);
+    return lstCelsius;
+  });
+
+// 4. Calculate monthly mean LST in Celsius
+var monthlyLST_C = ee.ImageCollection.fromImages(
+  years.map(function(year) {
+    return months.map(function(month) {
+      var filtered = modisLST
+        .filter(ee.Filter.calendarRange(year, year, 'year'))
+        .filter(ee.Filter.calendarRange(month, month, 'month'));
+      
+      var monthlyMean = filtered.mean();
+
+      return monthlyMean.set({
+        'year': year,
+        'month': month,
+        'date': ee.Date.fromYMD(year, month, 1).format('YYYY-MM')
+      });
+    });
+  }).flatten()
+);
+
+// 5. Plot monthly LST in Celsius for Turkey
+var chart = ui.Chart.image.series({
+  imageCollection: monthlyLST_C,
+  region: turkey,
+  reducer: ee.Reducer.mean(),
+  scale: 1000,
+  xProperty: 'date'
+}).setOptions({
+  title: 'Monthly Mean LST (Day) in Turkey (2000–2024) - °C',
+  hAxis: { title: 'Date', format: 'YYYY-MM', slantedText: true },
+  vAxis: { title: 'LST (°C)' },
+  lineWidth: 2,
+  pointSize: 4,
+  series: { 0: { color: 'red' } }
+});
+
+print(chart);
+
+// 6. Display latest available LST image (in °C)
+var latestLST = modisLST.sort('system:time_start', false).first();
+var lstVis = {
+  min: -10,
+  max: 45,
+  palette: ['blue', 'cyan', 'green', 'yellow', 'red']
+};
+
+Map.centerObject(turkey, 5);
+Map.addLayer(latestLST, lstVis, 'Latest LST Day (°C)');
