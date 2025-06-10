@@ -1,0 +1,49 @@
+// Define Study Area (Turkey)
+var turkey = ee.Geometry.Rectangle([25, 36, 45, 42]);
+
+// Load MODIS ET Dataset (2000 - 2024)
+var dataset = ee.ImageCollection('MODIS/006/MOD16A2')
+              .filterBounds(turkey)
+              .filterDate('2000-01-01', '2024-12-31')
+              .select('ET'); // ET in 0.1 kg/m²/8-day
+
+// Convert ET to mm (0.1 scaling)
+var datasetMM = dataset.map(function(image) {
+  return image.multiply(0.1).rename('ET_mm')
+              .copyProperties(image, ['system:time_start']);
+});
+
+// Aggregate 8-day ET into Yearly Mean ET
+var years = ee.List.sequence(2000, 2024); // Start from 2000
+var yearlyET = ee.ImageCollection.fromImages(
+  years.map(function(year) {
+    var start = ee.Date.fromYMD(year, 1, 1);
+    var end = start.advance(1, 'year');
+    var yearlyMean = datasetMM.filterDate(start, end).mean()
+                      .set('year', year)
+                      .set('system:time_start', start.millis());
+    return yearlyMean.rename('ET_mm');
+  })
+);
+
+// Create a Time Series Chart for Yearly ET
+var etChart = ui.Chart.image.series({
+  imageCollection: yearlyET,
+  region: turkey,
+  reducer: ee.Reducer.mean(),
+  scale: 2000,
+  xProperty: 'system:time_start'
+}).setOptions({
+  title: 'Mean Yearly Evapotranspiration (ET) in Turkey (2000–2024)',
+  hAxis: { title: 'Year' },
+  vAxis: { title: 'ET (mm/year)' },
+  lineWidth: 2,
+  pointSize: 5
+});
+
+print(etChart);
+
+// Display Mean ET Map for 2000–2024
+var meanET = datasetMM.filterDate('2000-01-01', '2024-12-31').mean().rename('Mean_ET');
+Map.centerObject(turkey, 5);
+Map.addLayer(meanET, {min: 0, max: 100, palette: ['blue', 'yellow', 'red']}, 'Mean ET Map (2000–2024)');
