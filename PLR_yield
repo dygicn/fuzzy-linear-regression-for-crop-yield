@@ -1,0 +1,181 @@
+# Phase 1: Expanding-Window Evaluation for Fuzzy Regression Model (PLR) across multiple crop sheets
+
+# Load libraries
+if (!require("fuzzyreg")) install.packages("fuzzyreg", dependencies = TRUE)
+if (!require("writexl")) install.packages("writexl", dependencies = TRUE)
+if (!require("patchwork")) install.packages("patchwork")
+
+library(fuzzyreg)
+library(dplyr)
+library(readxl)
+library(ggplot2)
+library(writexl)
+library(patchwork)
+
+# List all sheet names (one per crop)
+sheet_names <- excel_sheets("paper_2_data_29_04.xlsx")
+
+# Initialize containers
+all_summaries <- data.frame()
+all_predictions <- data.frame()  # For collecting fuzzy values
+
+# Loop through each crop sheet
+for (sheet in sheet_names) {
+  data_orig <- read_excel("paper_2_data_29_04.xlsx", sheet = sheet)
+  n_cols <- ncol(data_orig)
+  colnames(data_orig) <- c(paste0("x", 1:(n_cols - 1)), "y")
+  data_orig$year <- 2000:2022
+  
+  min_y <- min(data_orig$y)
+  max_y <- max(data_orig$y)
+  data_orig$y_norm <- (data_orig$y - min_y) / (max_y - min_y)
+  
+  delta <- 0.10
+  data_orig <- data_orig %>%
+    mutate(
+      y_left = pmax(y_norm - delta, 0),
+      y_right = pmin(y_norm + delta, 1)
+    )
+  
+  data_scaled <- data_orig %>%
+    mutate(across(starts_with("x"), ~ as.numeric(scale(.)))) %>%
+    mutate(
+      y_norm = y_norm,
+      left = y_left,
+      right = y_right
+    )
+  
+  results_all <- data.frame()
+  
+  for (test_year in 2016:2022) {
+    train_data <- data_scaled %>% filter(year < test_year)
+    test_data  <- data_scaled %>% filter(year == test_year)
+    
+    X_test <- model.matrix(~ x1 + x2 + x3 + x4 + x5 + x6 + x7 + x8 + x9, data = test_data)
+    y_true_center <- data_orig$y[data_orig$year == test_year]
+    
+    model <- suppressWarnings(
+      fuzzylm(
+        y_norm ~ x1 + x2 + x3 + x4 + x5 + x6 + x7 + x8 + x9,
+        data = train_data,
+        method = "plr",
+        fuzzy.left.y = "left",
+        fuzzy.right.y = "right"
+      )
+    )
+    
+    coefs <- coef(model)
+    pred_center_norm <- as.vector(X_test %*% coefs[, "central tendency"])
+    pred_left_norm   <- as.vector(X_test %*% coefs[, "lower boundary"])
+    pred_right_norm  <- as.vector(X_test %*% coefs[, "upper boundary"])
+    
+    pred_center <- pred_center_norm * (max_y - min_y) + min_y
+    pred_left   <- pred_left_norm   * (max_y - min_y) + min_y
+    pred_right  <- pred_right_norm  * (max_y - min_y) + min_y
+    pred_left <- pmax(pred_left, 0)
+    
+    y_left <- y_true_center - delta * abs(y_true_center)
+    y_right <- y_true_center + delta * abs(y_true_center)
+    
+    prediction_df <- data.frame(
+      Crop = sheet,
+      Year = test_year,
+      True_Center = y_true_center,
+      True_Left = y_left,
+      True_Right = y_right,
+      Pred_Center = pred_center,
+      Pred_Left = pred_left,
+      Pred_Right = pred_right
+    )
+    all_predictions <- bind_rows(all_predictions, prediction_df)
+    
+    mae_abs <- mean(c(
+      abs(y_left - pred_left),
+      abs(y_true_center - pred_center),
+      abs(y_right - pred_right)
+    ))
+    
+    rmse_abs <- sqrt(mean(c(
+      (y_left - pred_left)^2,
+      (y_true_center - pred_center)^2,
+      (y_right - pred_right)^2
+    )))
+    
+    GOF_val <- GOF(model)
+    TEF_val <- TEF(model)
+    
+    results_all <- rbind(results_all, data.frame(
+      Method = "PLR",
+      Crop = sheet,
+      TestYear = test_year,
+      GOF = GOF_val,
+      TEF = TEF_val,
+      MAE_Fuzzy_Abs = mae_abs,
+      RMSE_Fuzzy_Abs = rmse_abs
+    ))
+  }
+  
+  write.csv(results_all, file = file.path("PLR_crops", paste0("results_plr_", sheet, ".csv")), row.names = FALSE)
+  
+  summary_stats <- results_all %>%
+    summarise(
+      GOF_mean = mean(GOF), GOF_sd = sd(GOF),
+      TEF_mean = mean(TEF), TEF_sd = sd(TEF),
+      MAE_mean = mean(MAE_Fuzzy_Abs), MAE_sd = sd(MAE_Fuzzy_Abs),
+      RMSE_mean = mean(RMSE_Fuzzy_Abs), RMSE_sd = sd(RMSE_Fuzzy_Abs)
+    ) %>%
+    mutate(Crop = sheet, Method = "PLR") %>%
+    select(Crop, Method, everything())
+  
+  all_summaries <- bind_rows(all_summaries, summary_stats)
+}
+
+write.csv(all_summaries, file = "PLR_crops/summary_plr_all_crops.csv", row.names = FALSE)
+write_xlsx(all_predictions, path = "PLR_crops/fuzzy_predictions_all_crops_PLR.xlsx")
+
+# Plot predicted vs actual fuzzy values
+plot_metric <- function(df, mean_col, sd_col, title_text) {
+  df <- df %>%
+    arrange(desc(.data[[mean_col]])) %>%
+    mutate(Crop = factor(Crop, levels = unique(Crop)))  # Preserve sorted order
+  
+  ggplot(df, aes(y = Crop, x = .data[[mean_col]])) +
+    geom_bar(stat = "identity", fill = "steelblue", alpha = 0.7) +
+    geom_errorbar(aes(xmin = .data[[mean_col]] - .data[[sd_col]],
+                      xmax = .data[[mean_col]] + .data[[sd_col]]),
+                  width = 0.2, color = "black") +  # <-- use width, not height
+    labs(title = title_text, x = "Value", y = "Crop") +
+    theme_minimal() +
+    theme(axis.text.y = element_text(size = 10))
+}
+
+
+summary_df <- all_summaries
+
+p1 <- plot_metric(summary_df, "GOF_mean", "GOF_sd", "Goodness of Fit (GOF)-PLR")
+p2 <- plot_metric(summary_df, "TEF_mean", "TEF_sd", "Total Error of Fit (TEF)-PLR")
+p3 <- plot_metric(summary_df, "MAE_mean", "MAE_sd", "Mean Absolute Error (MAE)-PLR")
+p4 <- plot_metric(summary_df, "RMSE_mean", "RMSE_sd", "Root Mean Square Error (RMSE)-PLR")
+
+combined_plot <- (p1 | p2) / (p3 | p4)
+print(combined_plot)
+
+ggsave("PLR_crops/PLR_metrics_all_crops.png", combined_plot, width = 14, height = 10, dpi = 300)
+
+# Fuzzy prediction interval plot
+lineplot <- ggplot(all_predictions, aes(x = Year)) +
+  geom_ribbon(aes(ymin = True_Left, ymax = True_Right), fill = "lightblue", alpha = 0.4) +
+  geom_line(aes(y = True_Center), color = "blue", linewidth = 1) +
+  geom_ribbon(aes(ymin = Pred_Left, ymax = Pred_Right), fill = "lightgreen", alpha = 0.4) +
+  geom_line(aes(y = Pred_Center), color = "darkgreen", linewidth = 1, linetype = "dashed") +
+  facet_wrap(~ Crop, scales = "free_y") +
+  labs(
+    title = "True vs Predicted Fuzzy Intervals (PLR, 2016–2022)",
+    x = "Year",
+    y = "Crop Yield"
+  ) +
+  theme_minimal()
+
+print(lineplot)
+ggsave("PLR_crops/PLR_line_all_crops.png", lineplot, width = 14, height = 10, dpi = 300, bg = "white")
+
