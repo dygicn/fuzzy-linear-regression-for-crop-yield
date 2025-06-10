@@ -1,0 +1,255 @@
+# Load libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(forcats)
+library(readxl)
+library(readr)
+
+# Set your working directory
+setwd("/Users/.....")
+
+# Load model summaries
+plrls <- read_csv("summary_plrls_all_crops copy.csv") %>% mutate(Model = "PLRLS")
+plr   <- read_csv("summary_plr_all_crops copy.csv")   %>% mutate(Model = "PLR")
+flar  <- read_csv("summary_flar_all_crops copy.csv")  %>% mutate(Model = "FLAR")
+
+# Combine summaries
+combined <- bind_rows(plrls, plr, flar)
+
+# ================================
+# 1. MAE & RMSE Plot
+# ================================
+long_errors <- combined %>%
+  pivot_longer(cols = c(MAE_mean, RMSE_mean), names_to = "Error_Type", values_to = "Error_Value") %>%
+  mutate(SD_Value = ifelse(Error_Type == "MAE_mean", MAE_sd, RMSE_sd)) %>%
+  group_by(Error_Type) %>%
+  mutate(Crop = fct_reorder(Crop, Error_Value, .desc = TRUE)) %>%
+  ungroup()
+
+p1 <- ggplot(long_errors, aes(x = Error_Value, y = Crop, fill = Model)) +
+  geom_col(position = position_dodge(width = 0.7)) +
+  geom_errorbar(aes(xmin = Error_Value - SD_Value, xmax = Error_Value + SD_Value),
+                position = position_dodge(width = 0.7), width = 0.3) +
+  facet_wrap(~ Error_Type, scales = "free_x") +
+  labs(title = "MAE and RMSE by Crop and Model", x = "Error Value", y = "Crop") +
+  theme_minimal()
+
+print(p1)
+ggsave("mae_rmse_comparison.pdf", p1, width = 11, height = 8.5)
+
+
+# ================================
+# 2. GOF & TEF Plot
+# ================================
+long_metrics <- combined %>%
+  pivot_longer(cols = c(GOF_mean, TEF_mean), names_to = "Metric", values_to = "Mean_Value") %>%
+  mutate(SD_Value = ifelse(Metric == "GOF_mean", GOF_sd, TEF_sd)) %>%
+  group_by(Metric) %>%
+  mutate(Crop = fct_reorder(Crop, Mean_Value, .desc = FALSE)) %>%
+  ungroup()
+
+p2 <- ggplot(long_metrics, aes(x = Mean_Value, y = Crop, fill = Model)) +
+  geom_col(position = position_dodge(width = 0.8)) +
+  geom_errorbar(aes(xmin = Mean_Value - SD_Value, xmax = Mean_Value + SD_Value),
+                position = position_dodge(width = 0.8), width = 0.3) +
+  facet_wrap(~ Metric, scales = "free_x") +
+  labs(title = "GOF and TEF by Crop and Model", x = "Value", y = "Crop") +
+  theme_minimal()
+
+print(p2)
+ggsave("gof_tef_comparison.pdf", p2, width = 11, height = 8.5)
+
+# ALTERNATIVE
+combined %>%
+  group_by(Model) %>%
+  summarise(
+    GOF_mean_avg = mean(GOF_mean, na.rm = TRUE),
+    GOF_sd_avg = mean(GOF_sd, na.rm = TRUE),
+    TEF_mean_avg = mean(TEF_mean, na.rm = TRUE),
+    TEF_sd_avg = mean(TEF_sd, na.rm = TRUE)
+  )
+
+
+# ================================
+# 3. Interval Prediction Plot
+# ================================
+flar <- read_excel("fuzzy_predictions_all_crops_FLAR.xlsx") %>% mutate(Model = "FLAR")
+plr  <- read_excel("fuzzy_predictions_all_crops_PLR.xlsx")  %>% mutate(Model = "PLR")
+plrls <- read_excel("fuzzy_predictions_all_crops_PLRLS.xlsx") %>% mutate(Model = "PLRLS")
+
+pred_combined <- bind_rows(flar, plr, plrls)
+
+p3 <- ggplot(pred_combined, aes(x = Year)) +
+  geom_ribbon(aes(ymin = True_Left, ymax = True_Right), fill = "gray70", alpha = 0.4) +
+  geom_line(aes(y = True_Center), linetype = "dashed", color = "black") +
+  geom_ribbon(aes(ymin = Pred_Left, ymax = Pred_Right, fill = Model), alpha = 0.25) +
+  geom_line(aes(y = Pred_Center, color = Model, linetype = Model), linewidth = 1) +
+  facet_wrap(~ Crop, scales = "free_y") +
+  labs(title = "True vs Predicted Fuzzy Crop Yields", x = "Year", y = "Crop Yield") +
+  theme_minimal()
+
+print(p3)
+ggsave("true_vs_predicted_fuzzy.pdf", p3, width = 14, height = 10)
+
+
+# ================================
+# 4. Boxplot of Absolute Errors
+# ================================
+error_long <- pred_combined %>%
+  mutate(
+    abs_error_center = abs(True_Center - Pred_Center),
+    abs_error_left   = abs(True_Left - Pred_Left),
+    abs_error_right  = abs(True_Right - Pred_Right)
+  ) %>%
+  pivot_longer(cols = starts_with("abs_error"), names_to = "error_type", values_to = "error_value") %>%
+  mutate(error_type = recode(error_type,
+                             abs_error_center = "Center",
+                             abs_error_left = "Left",
+                             abs_error_right = "Right"))
+
+p4 <- ggplot(error_long, aes(x = Crop, y = error_value, fill = Model)) +
+  geom_boxplot(outlier.size = 0.7, position = position_dodge(width = 0.8)) +
+  facet_wrap(~error_type, scales = "free_y", ncol = 1) +
+  # labs(title = "Boxplot of Absolute Errors by Crop and Model",
+  #      subtitle = "Center, Left Spread, Right Spread",
+  #     x = "Crop", y = "Absolute Error") +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p4)
+ggsave("error_boxplot_separated.pdf", p4, width = 14, height = 10)
+
+
+# ================================
+# 5. Log-Scaled Metric Lines
+# ================================
+long_df <- combined %>%
+  select(Crop, Model, MAE_mean, RMSE_mean, GOF_mean, TEF_mean) %>%
+  pivot_longer(cols = c(MAE_mean, RMSE_mean, GOF_mean, TEF_mean), names_to = "Metric", values_to = "Value") %>%
+  mutate(log_value = log10(Value + 1))  # Prevent log(0)
+
+p5 <- ggplot(long_df, aes(x = Crop, y = log_value, group = Model, color = Model, shape = Model)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2) +
+  facet_wrap(~ Metric, scales = "free_y") +
+  labs(title = "Log10-Scaled Evaluation Metrics by Crop and Model",
+       y = "log10(Value + 1)", x = "Crop") +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p5)
+ggsave("log_scaled_metrics.pdf", p5, width = 14, height = 10)
+
+
+# Add log-transformed columns (add 1 to avoid log(0))
+long_metrics <- combined %>%
+  pivot_longer(cols = c(GOF_mean, TEF_mean), names_to = "Metric", values_to = "Mean_Value") %>%
+  mutate(
+    SD_Value = ifelse(Metric == "GOF_mean", GOF_sd, TEF_sd),
+    log_value = log10(Mean_Value + 1),  # log scale for visualization
+    log_sd = SD_Value / (Mean_Value + 1) / log(10)  # approximate SD in log space
+  ) %>%
+  group_by(Metric) %>%
+  mutate(Crop = fct_reorder(Crop, log_value, .desc = TRUE)) %>%
+  ungroup()
+
+# Create plot
+p_log <- ggplot(long_metrics, aes(x = log_value, y = Crop, fill = Model)) +
+  geom_col(position = position_dodge(width = 0.7)) +
+  geom_errorbar(
+    aes(xmin = log_value - log_sd, xmax = log_value + log_sd),
+    position = position_dodge(width = 0.7), width = 0.3
+  ) +
+  facet_wrap(~ Metric, scales = "free_x") +
+  labs(
+    title = "Log10-Scaled GOF and TEF by Crop and Model",
+    x = "log10(Value + 1)",
+    y = "Crop", fill = "Model"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    strip.text = element_text(size = 14),
+    axis.text.y = element_text(size = 10),
+    axis.text.x = element_text(size = 10),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10)
+  )
+
+# Display the plot in RStudio
+print(p_log)
+
+# Save to file
+ggsave("gof_tef_log_scaled.pdf", p_log, width = 11, height = 8.5)
+
+
+
+library(dplyr)
+library(scales)
+
+# Load your combined model results (FLAR, PLR, PLRLS)
+# Assuming combined_df is already loaded with columns:
+# Crop, Model, TEF_mean, GOF_mean, MAE_mean, RMSE_mean
+
+# 1. Normalize each metric using Min-Max Scaling
+normalize_minmax <- function(x) {
+  (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
+}
+
+combined_df <- combined %>%
+  mutate(
+    TEF_scaled = normalize_minmax(TEF_mean),
+    GOF_scaled = normalize_minmax(GOF_mean),
+    MAE_scaled = normalize_minmax(MAE_mean),
+    RMSE_scaled = normalize_minmax(RMSE_mean)
+  )
+
+# 2. Compute variance of each original metric
+variances <- combined_df %>%
+  summarise(
+    var_TEF = var(TEF_mean, na.rm = TRUE),
+    var_GOF = var(GOF_mean, na.rm = TRUE),
+    var_MAE = var(MAE_mean, na.rm = TRUE),
+    var_RMSE = var(RMSE_mean, na.rm = TRUE)
+  )
+
+# 3. Calculate normalized weights
+total_var <- sum(variances)
+weights <- variances / total_var
+
+# Extract weights
+w_tef <- as.numeric(weights$var_TEF)
+w_gof <- as.numeric(weights$var_GOF)
+w_mae <- as.numeric(weights$var_MAE)
+w_rmse <- as.numeric(weights$var_RMSE)
+
+# 4. Compute Weighted Error Score (lower is better)
+combined_df <- combined_df %>%
+  mutate(
+    Weighted_Error_Score = w_tef * TEF_scaled +
+      w_gof * GOF_scaled +
+      w_mae * MAE_scaled +
+      w_rmse * RMSE_scaled
+  )
+
+# 5. Select best model per crop
+best_models_var_based <- combined_df %>%
+  group_by(Crop) %>%
+  slice_min(order_by = Weighted_Error_Score, n = 1) %>%
+  ungroup()
+
+# View result
+print(best_models_var_based %>%
+        select(Crop, Model, TEF_mean, GOF_mean, MAE_mean, RMSE_mean, Weighted_Error_Score))
+
+library(writexl)
+
+# Save to Excel
+write_xlsx(
+  best_models_var_based %>% 
+    select(Crop, Model, TEF_mean, GOF_mean, MAE_mean, RMSE_mean, Weighted_Error_Score),
+  path = "best_model_per_crop_variance_based.xlsx"
+)
+
+print(best_models_var_based, n=11)
+
