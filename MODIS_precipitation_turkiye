@@ -1,0 +1,47 @@
+// Define Study Area (Turkey)
+var turkey = ee.Geometry.Rectangle([25, 36, 45, 42]); // Modify as needed
+
+// Load CHIRPS Daily Precipitation Dataset (2000 - 2024)
+var dataset = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY')
+              .filterBounds(turkey)
+              .filterDate('2000-01-01', '2024-12-31')
+              .select('precipitation');
+
+// Aggregate Daily Data to Yearly Totals
+var yearlyRainfall = ee.ImageCollection.fromImages(
+  ee.List.sequence(2000, 2024).map(function(year) {
+    var filtered = dataset
+      .filter(ee.Filter.calendarRange(year, year, 'year'))
+      .sum(); // Sum daily rainfall for the whole year
+
+    return filtered.set('year', year)
+                   .set('system:time_start', ee.Date.fromYMD(year, 1, 1));
+  })
+);
+
+// Generate Time-Series Graph for Yearly Rainfall
+var rainfallChart = ui.Chart.image.series({
+  imageCollection: yearlyRainfall,
+  region: turkey,
+  reducer: ee.Reducer.mean(),
+  scale: 10000,
+  xProperty: 'system:time_start'
+}).setOptions({
+  title: 'Yearly Precipitation Trends in Turkey (2000–2024)',
+  hAxis: { title: 'Year' },
+  vAxis: { title: 'Precipitation (mm/year)' },
+  lineWidth: 2,
+  pointSize: 5
+});
+
+// Print the Rainfall Graph
+print(rainfallChart);
+
+// Compute and Display Long-Term Mean Annual Rainfall
+var longTermMean = yearlyRainfall.mean().rename('Mean_Yearly_Precipitation');
+
+var visParams = {min: 0, max: 1200, palette: ['blue', 'yellow', 'red']};
+Map.addLayer(longTermMean, visParams, 'Mean Yearly Rainfall (Turkey)');
+
+// Center the Map on Turkey
+Map.setCenter(35, 39, 5);
