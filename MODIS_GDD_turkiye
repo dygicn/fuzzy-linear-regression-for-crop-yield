@@ -1,0 +1,81 @@
+// 1. Define Study Area (Turkey)
+var roi = ee.Geometry.Rectangle([25, 36, 45, 42]); // Covers all of Turkey
+
+// 2. Load ERA5-Land Daily Temperature Data (2000-2024)
+var dataset = ee.ImageCollection('ECMWF/ERA5_LAND/DAILY_AGGR')
+              .filterBounds(roi)
+              .filterDate('2000-01-01', '2024-12-31')
+              .select(['temperature_2m_max', 'temperature_2m_min']);
+
+// 3. Choose ONE Crop to Process (Change as Needed)
+var cropName = 'Grape';  // 
+var baseTemps = {
+  'Wheat': 10,
+  'Tomatoes': 10,
+  'Sugar Beet': 15,
+  'Rice': 10,
+  'Barley': 5,
+  'Apple': 4,
+  'Olive': 10,
+  'Maize': 10,
+  'Grape': 12,
+  'Bean': 10,
+  'Potatoes': 10  
+};
+var T_base = baseTemps[cropName]; // Get base temperature for selected crop
+
+// 4. Compute Yearly GDD for Selected Crop
+var yearlyGDD = ee.ImageCollection(
+  ee.List.sequence(2000, 2024).map(function(year) {
+    var start = ee.Date.fromYMD(year, 1, 1);
+    var end = start.advance(1, 'year');
+
+    var gddYearly = dataset
+      .filterDate(start, end)
+      .map(function(image) {
+        var T_max = image.select('temperature_2m_max').subtract(273.15); // Convert Kelvin to Celsius
+        var T_min = image.select('temperature_2m_min').subtract(273.15);
+        var T_avg = T_max.add(T_min).divide(2);
+        var gdd = T_avg.subtract(T_base).max(0).rename('GDD'); // GDD cannot be negative
+        return gdd;
+      })
+      .sum()
+      .rename('GDD');
+
+    return gddYearly.set('year', year).set('system:time_start', start.millis());
+  })
+);
+
+// 5. Reduce Over Turkey to Get Mean Yearly GDD
+var yearlyGDDSeries = yearlyGDD.map(function(img) {
+  var stats = img.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: roi,
+    scale: 50000,  // Lower resolution to save memory
+    maxPixels: 1e9
+  });
+  return ee.Feature(null, {
+    'year': img.get('year'),
+    'crop': cropName,
+    'GDD': stats.get('GDD')
+  });
+});
+
+// 6. Export Yearly GDD Data as CSV (Google Drive)
+Export.table.toDrive({
+  collection: yearlyGDDSeries,
+  description: cropName + '_Yearly_GDD_Turkey_2000_2024',
+  fileFormat: 'CSV'
+});
+
+// 7. Generate GDD Chart for Selected Crop
+var chart = ui.Chart.feature.byFeature(yearlyGDDSeries, 'year', 'GDD')
+  .setChartType('LineChart')
+  .setOptions({
+    title: 'Yearly Growing Degree Days (GDD) for ' + cropName + ' (2000–2024, Turkey)',
+    hAxis: { title: 'Year' },
+    vAxis: { title: 'GDD' },
+    lineWidth: 2
+  });
+
+print(chart);
