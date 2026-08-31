@@ -1,0 +1,17 @@
+## Crop yield data
+
+Annual crop yield data were obtained from the FAOSTAT Crops and
+Livestock Products database:
+
+https://www.fao.org/faostat/
+
+The following filters were used:
+
+- Area: Türkiye
+- Element: Yield
+- Period: 2000–2024
+- Unit: kg/ha
+- Accessed: 29 June 2026
+
+The analysis includes Apples, Barley, Beans, Grapes, Maize, Olives,
+Potatoes, Rice, Sugar beet, Tomatoes, and Wheat.
