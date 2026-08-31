@@ -24,3 +24,5 @@ After placing the required CSV files in `data/raw/`, open R in the main reposito
 ```r
 source("install_packages.R")
 source("run_all.R")
+
+The generated results, tables, and figures will be saved automatically in the `output/` folder.
